@@ -24,13 +24,18 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/bluebreezecf/opentsdb-goclient/client"
-	"github.com/bluebreezecf/opentsdb-goclient/config"
+	"github.com/nickman/opentsdb-goclient/client"
+	"github.com/nickman/opentsdb-goclient/config"
 )
 
 func main() {
 	opentsdbCfg := config.OpenTSDBConfig{
-		OpentsdbHost: "127.0.0.1:4242",
+		OpentsdbHost: "127.0.0.1:4243",
+		//OpentsdbHost: "/tmp/opentsdb.sock",
+		//OpentsdbHost: "/tmp/opentsdb.notsock",
+		//OpentsdbHost: "http+unix://opentsdb",
+
+
 	}
 	tsdbClient, err := client.NewClient(opentsdbCfg)
 	if err != nil {

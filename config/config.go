@@ -26,6 +26,9 @@ type OpenTSDBConfig struct {
 
 	// The host of the target opentsdb, is a required non-empty string which is
 	// in the format of ip:port without http:// prefix or a domain.
+	// If the string evaluates successfully as an existing file with
+	// a mode of os.ModeNamedPipe (e.g. /tmp/opentsdb.sock) the Unix transport
+	// will be activated and this value will be set to http+unix://opentsdb
 	OpentsdbHost string
 
 	// A pointer of http.Tranport is used by the opentsdb client.

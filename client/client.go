@@ -32,8 +32,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"os"
+	"github.com/nickman/opentsdb-goclient/config"
+	"github.com/tv42/httpunix"
 
-	"github.com/bluebreezecf/opentsdb-goclient/config"
 )
 
 const (
@@ -44,9 +46,13 @@ const (
 	PutMethod          = "PUT"
 	DeleteMethod       = "DELETE"
 
+
+	PingPath	   = "/api/ping"
 	PutPath            = "/api/put"
 	PutRespWithSummary = "summary"
 	PutRespWithDetails = "details"
+
+	PingResponse 	   = "pong"
 
 	QueryPath     = "/api/query"
 	QueryLastPath = "/api/query/last"
@@ -81,6 +87,17 @@ const (
 	// Unit is bytes, and assumes that config items of 'tsd.http.request.enable_chunked = true'
 	// and 'tsd.http.request.max_chunk = 40960' are all in the opentsdb.conf:
 	DefaultMaxContentLength = 40960
+
+	HttpUnixURL = "http+unix://opentsdb"
+
+)
+
+var (
+	UnixTransport = &httpunix.Transport{
+		DialTimeout:           DefaultDialTimeout,
+		RequestTimeout:        1 * time.Second,
+		ResponseHeaderTimeout: 1 * time.Second,
+	}
 )
 
 var (
@@ -90,8 +107,12 @@ var (
 			Timeout:   DefaultDialTimeout,
 			KeepAlive: KeepAliveTimeout,
 		}).Dial,
+
 	}
+
 )
+
+
 
 // Client defines the sdk methods, by which other go applications can
 // commnicate with the OpenTSDB via the pre-defined rest-apis.
@@ -393,19 +414,43 @@ type Client interface {
 	DeleteTSMetaData(tsMetaData TSMetaData) (*TSMetaDataResponse, error)
 }
 
+//func fakeDial(proto, addr string) (conn net.Conn, err error) {
+//	return net.Dial("unix", addr)
+//}
+
 // NewClient creates an instance of http client which implements the
 // pre-defined rest apis of OpenTSDB.
 // A non-nil error instance returned means currently the target OpenTSDB
 // designated with the given endpoint is not connectable.
 func NewClient(opentsdbCfg config.OpenTSDBConfig) (Client, error) {
-	opentsdbCfg.OpentsdbHost = strings.TrimSpace(opentsdbCfg.OpentsdbHost)
-	if len(opentsdbCfg.OpentsdbHost) <= 0 {
-		return nil, errors.New("The OpentsdbEndpoint of the given config should not be empty.")
-	}
+	unixSock := false;
 	transport := opentsdbCfg.Transport
 	if transport == nil {
 		transport = DefaultTransport
 	}
+
+	opentsdbCfg.OpentsdbHost = strings.TrimSpace(opentsdbCfg.OpentsdbHost)
+	if len(opentsdbCfg.OpentsdbHost) <= 0 {
+		return nil, errors.New("The OpentsdbEndpoint of the given config should not be empty.")
+	}
+
+	// =====================================================================
+	// Check to see if we're using a Unix Socket
+	// If so, activate the Unix transport.
+	// =====================================================================
+	fi,err := os.Stat(opentsdbCfg.OpentsdbHost)
+	if err == nil {
+		m := fi.Mode() & os.ModeSocket
+		if m != 0 {
+			UnixTransport.RegisterLocation("opentsdb", opentsdbCfg.OpentsdbHost)
+			transport.RegisterProtocol(httpunix.Scheme, UnixTransport)
+			opentsdbCfg.OpentsdbHost = HttpUnixURL
+			unixSock = true;
+		} else {
+			return nil, errors.New(fmt.Sprintf("Invalid URL and not a Unix Socket File [%v]", opentsdbCfg.OpentsdbHost))
+		}
+	}
+	//fmt.Printf("os.Stat err: [%v], Mode: [%v]\n", err, fi.Mode())
 	client := &http.Client{
 		Transport: transport,
 	}
@@ -418,11 +463,18 @@ func NewClient(opentsdbCfg config.OpenTSDBConfig) (Client, error) {
 	if opentsdbCfg.MaxContentLength <= 0 {
 		opentsdbCfg.MaxContentLength = DefaultMaxContentLength
 	}
-	tsdbEndpoint := fmt.Sprintf("http://%s", opentsdbCfg.OpentsdbHost)
+	tsdbEndpoint := ""
+	if(unixSock) {
+		tsdbEndpoint = HttpUnixURL
+	} else {
+		tsdbEndpoint = fmt.Sprintf("http://%s", opentsdbCfg.OpentsdbHost)
+		opentsdbCfg.OpentsdbHost = tsdbEndpoint
+	}
 	clientImpl := clientImpl{
 		tsdbEndpoint: tsdbEndpoint,
 		client:       client,
 		opentsdbCfg:  opentsdbCfg,
+		unixSocket:   unixSock,
 	}
 	return &clientImpl, nil
 }
@@ -432,6 +484,7 @@ type clientImpl struct {
 	tsdbEndpoint string
 	client       *http.Client
 	opentsdbCfg  config.OpenTSDBConfig
+	unixSocket   bool
 }
 
 // Response defines the common behaviours all the specific response for
@@ -507,12 +560,23 @@ func (c *clientImpl) isValidOperateMethod(method string) bool {
 }
 
 func (c *clientImpl) Ping() error {
-	conn, err := net.DialTimeout("tcp", c.opentsdbCfg.OpentsdbHost, DefaultDialTimeout)
+	t := &http.Transport{}
+	t.RegisterProtocol(httpunix.Scheme, UnixTransport)
+	var client = http.Client{
+		Transport: t,
+	}
+	resp, err := client.Get(c.opentsdbCfg.OpentsdbHost + PingPath)
 	if err != nil {
 		return errors.New(fmt.Sprintf("The target OpenTSDB is unreachable: %v", err))
 	}
-	if conn != nil {
-		defer conn.Close()
+	if resp.StatusCode != 200 {
+		return errors.New(fmt.Sprintf("Error pinging target OpenTSDB: %v", resp.StatusCode))
+	}
+	defer resp.Body.Close()
+	htmlData, err := ioutil.ReadAll(resp.Body)
+	responseText := string(htmlData)
+	if PingResponse != responseText {
+		return errors.New(fmt.Sprintf("Unexpected response pinging target OpenTSDB: [%v]", responseText))
 	}
 	return nil
 }
